@@ -497,23 +497,36 @@ tool_as_json <- function(tool) {
   )
 
   # Include title if set (MCP spec 2025-06-18)
-  # ellmer doesn't have a title field on ToolDef yet,
-  # but we check for it via the S7 object system.
+  # ellmer stores title in annotations$title via tool_annotations(title = ...).
+  # Future ellmer versions may add a dedicated ToolDef title property.
+  # Check both: dedicated property first, then annotations fallback.
   title_val <- NULL
   tryCatch({
     title_val <- tool@title
   }, error = function(e) NULL)
+  if ((is.null(title_val) || !nzchar(title_val)) && length(tool@annotations) > 0) {
+    title_val <- tool@annotations$title
+  }
   if (!is.null(title_val) && nzchar(title_val)) {
     result$title <- title_val
+    # Remove title from annotations to avoid duplication
+    if (!is.null(result$annotations) && !is.null(result$annotations$title)) {
+      result$annotations$title <- NULL
+      if (length(result$annotations) == 0) result$annotations <- NULL
+    }
   }
 
   # Include outputSchema if set (MCP spec 2025-06-18)
-  # ellmer doesn't have an outputSchema field on ToolDef yet,
-  # but we check for it via the S7 object system.
+  # Supports two paths:
+  #   1. Future ellmer: ToolDef gains an outputSchema property
+  #   2. Current ellmer: users set it via set_tool_output_schema() helper
+  #      which stores it as an attribute
   output_schema <- NULL
   tryCatch({
     output_schema <- tool@outputSchema
-  }, error = function(e) NULL)
+  }, error = function(e) {
+    output_schema <<- attr(tool, "outputSchema")
+  })
   if (!is.null(output_schema) && length(output_schema) > 0) {
     result$outputSchema <- output_schema
   }

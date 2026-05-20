@@ -120,10 +120,14 @@ as_tool_call_result <- function(data, result) {
 
   # Only add structuredContent for list/data.frame results
   # (not for ContentImageInline, ContentText, character, etc.)
-  if (is.list(result_value) && !inherits(result_value, c("ellmer::ContentImageInline", "data.frame"))) {
+  if (is.data.frame(result_value)) {
+    # Row-oriented records so each element = one observation,
+    # matching how JSON schemas typically describe tabular output.
+    structured <- unname(lapply(seq_len(nrow(result_value)), function(i) {
+      as.list(result_value[i, , drop = FALSE])
+    }))
+  } else if (is.list(result_value) && !inherits(result_value, c("ellmer::ContentImageInline"))) {
     structured <- result_value
-  } else if (is.data.frame(result_value)) {
-    structured <- lapply(as.list(result_value), unname)
   }
 
   response <- list(
