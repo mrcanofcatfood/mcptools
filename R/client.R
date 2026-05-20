@@ -439,19 +439,40 @@ send_and_receive <- function(process, message) {
   process$write_input(paste0(json_msg, "\n"))
 
   # poll for response
+  max_attempts <- getOption("mcptools.client_max_attempts", 300)
+  poll_interval <- getOption("mcptools.client_poll_interval", 0.2)
+  expected_id <- message$id
   output <- NULL
   attempts <- 0
-  max_attempts <- 20
 
   while (length(output) == 0 && attempts < max_attempts) {
-    Sys.sleep(0.2)
-    output <- process$read_output_lines()
+    Sys.sleep(poll_interval)
+    lines <- process$read_output_lines()
+
+    if (length(lines) > 0) {
+      for (line in lines) {
+        parsed <- tryCatch(jsonlite::parse_json(line), error = function(e) NULL)
+        if (is.null(parsed)) next
+
+        # Skip notifications (no id field) — e.g. logging, progress
+        if (is.null(parsed$id)) {
+          log_cat_client(c("NOTIFICATION: ", line))
+          next
+        }
+
+        # Return the first response matching our request id
+        if (is.null(expected_id) || identical(parsed$id, expected_id)) {
+          log_cat_client(c("FROM SERVER: ", line))
+          output <- parsed
+          break
+        }
+      }
+    }
     attempts <- attempts + 1
   }
 
-  if (!is.null(output) && length(output) > 0) {
-    log_cat_client(c("FROM SERVER: ", output[1]))
-    return(jsonlite::parse_json(output[1]))
+  if (!is.null(output)) {
+    return(output)
   }
 
   log_cat_client(c("ALERT: No response received after ", attempts, " attempts"))

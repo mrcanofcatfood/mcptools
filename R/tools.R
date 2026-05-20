@@ -177,6 +177,14 @@ execute_tool_call <- function(data) {
   tool_name <- data$params$name
   args <- data$params$arguments
 
+  # Store request metadata for progress/logging/cancellation
+  the$current_request_id <- data$id
+  store_progress_token(data)
+  on.exit({
+    clear_progress_token()
+    clear_cancelled(data$id)
+  }, add = TRUE)
+
   # HACK for btw_tool_env_describe_environment. In the JSON, it will have
   # `"items": []`, and that translates to an empty list, but we want NULL.
   if (tool_name == "btw_tool_env_describe_environment") {
@@ -192,6 +200,33 @@ execute_tool_call <- function(data) {
       x
     }
   })
+
+  # Run middleware hook if configured
+  if (!is.null(the$on_tool_call)) {
+    hook_result <- tryCatch(
+      the$on_tool_call(tool_name, args),
+      error = function(e) {
+        return(jsonrpc_response(
+          data$id,
+          error = list(code = -32603, message = paste0("Middleware error: ", conditionMessage(e)))
+        ))
+      }
+    )
+    # If middleware returned a jsonrpc error, short-circuit
+    if (inherits(hook_result, "jsonrpc_response") ||
+        (is.list(hook_result) && !is.null(hook_result$error))) {
+      return(hook_result)
+    }
+    # If middleware returned modified args, use them
+    if (is.list(hook_result) && !is.null(hook_result$method)) {
+      # It returned a full jsonrpc response — use it
+      return(hook_result)
+    }
+    if (is.list(hook_result) && is.null(hook_result$jsonrpc)) {
+      # It returned modified args
+      args <- hook_result
+    }
+  }
 
   tryCatch(
     as_tool_call_result(data, do.call(data$tool, args)),

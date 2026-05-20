@@ -93,6 +93,12 @@
 #' @param instructions Optional server instructions sent to the LLM during
 #'   initialisation (protocol version >= 2025-03-26). Defaults to a generic
 #'   description of the R session.
+#' @param on_tool_call Optional callback function invoked before each tool
+#'   execution. Receives `(tool_name, args)` and should return either
+#'   `NULL` (proceed), a modified `args` list, or a `jsonrpc_response()`
+#'   with `error` set to short-circuit the call. Use this for input validation,
+#'   rate limiting, audit logging, or permission checks across all tools
+#'   without modifying individual tool functions.
 #'
 #' @returns
 #' `mcp_server()` and `mcp_session()` are both called primarily for their
@@ -151,7 +157,8 @@ mcp_server <- function(
   session_tools = TRUE,
   server_name = NULL,
   server_version = NULL,
-  instructions = NULL
+  instructions = NULL,
+  on_tool_call = NULL
 ) {
   check_not_interactive()
   type <- rlang::arg_match(type)
@@ -161,6 +168,9 @@ mcp_server <- function(
   the$server_name <- server_name
   the$server_version <- server_version
   the$instructions <- instructions
+  the$on_tool_call <- on_tool_call
+  the$min_log_level <- "info"
+  the$cancelled_requests <- list()
   set_server_tools(tools, session_tools = the$sessions_enabled)
 
   switch(
@@ -304,6 +314,14 @@ handle_http_get <- function(req) {
 }
 
 handle_http_notification_or_response <- function(data) {
+  # Handle cancellation notification over HTTP
+  if (identical(data$method, "notifications/cancelled")) {
+    request_id <- data$params$requestId
+    if (!is.null(request_id)) {
+      mark_cancelled(request_id)
+      logcat(c("CANCEL: request ", request_id, " ", data$params$reason %||% ""))
+    }
+  }
   NULL
 }
 
@@ -341,6 +359,17 @@ handle_http_request_message <- function(data) {
       response_raw <- nanonext::recv(the$server_socket, mode = "character")
       return(jsonlite::parse_json(response_raw))
     }
+  } else if (data$method == "logging/setLevel") {
+    level <- data$params$level
+    if (!is.null(level) && level %in% MCP_LOG_LEVELS) {
+      the$min_log_level <- level
+      return(jsonrpc_response(data$id, list()))
+    } else {
+      return(jsonrpc_response(
+        data$id,
+        error = list(code = -32602, message = paste0("Invalid log level: ", level))
+      ))
+    }
   } else {
     return(jsonrpc_response(
       data$id,
@@ -374,9 +403,10 @@ handle_message_from_client <- function(line) {
 
   if (!is.list(data) || is.null(data$method)) {
     cat_json(jsonrpc_response(
-      data$id,
+      data$id %||% NA,
       error = list(code = -32600, message = "Invalid Request")
     ))
+    return()
   }
 
   # If we made it here, it's valid JSON
@@ -416,6 +446,26 @@ handle_message_from_client <- function(line) {
     # If there is no `id` in the request, then this is a notification and the
     # client does not expect a response.
     if (data$method == "notifications/initialized") {}
+    # Handle cancellation (spec 2025-06-18)
+    if (data$method == "notifications/cancelled") {
+      request_id <- data$params$requestId
+      if (!is.null(request_id)) {
+        mark_cancelled(request_id)
+        logcat(c("CANCEL: request ", request_id, " ", data$params$reason %||% ""))
+      }
+    }
+  } else if (data$method == "logging/setLevel") {
+    # Handle logging level changes (spec 2025-06-18)
+    level <- data$params$level
+    if (!is.null(level) && level %in% MCP_LOG_LEVELS) {
+      the$min_log_level <- level
+      cat_json(jsonrpc_response(data$id, list()))
+    } else {
+      cat_json(jsonrpc_response(
+        data$id,
+        error = list(code = -32602, message = paste0("Invalid log level: ", level))
+      ))
+    }
   } else {
     cat_json(jsonrpc_response(
       data$id,
@@ -463,7 +513,7 @@ capabilities <- function(protocol_version = latest_protocol_version) {
   res <- list(
     protocolVersion = protocol_version,
     capabilities = list(
-      # logging = named_list(),
+      logging = named_list(),
       prompts = named_list(
         listChanged = FALSE
       ),
