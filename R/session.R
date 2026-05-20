@@ -107,18 +107,40 @@ as_tool_call_result <- function(data, result) {
     format_result <- asNamespace("ellmer")[["tool_string"]] %||% format_result
   }
 
-  jsonrpc_response(
-    data$id,
-    list(
-      content = list(
-        list(
-          type = "text",
-          text = format_result(result)
-        )
-      ),
-      isError = is_error
-    )
+  # ── Structured content (MCP spec 2025-06-18) ──────────────────
+  # When a tool returns a plain R list/object, include both
+  # content (text) and structuredContent (JSON) in the response.
+  # Clients that support structuredContent get typed data;
+  # others fall back to the text content.
+  structured <- NULL
+  result_value <- result
+  if (inherits(result, "ellmer::ContentToolResult")) {
+    result_value <- result@value
+  }
+
+  # Only add structuredContent for list/data.frame results
+  # (not for ContentImageInline, ContentText, character, etc.)
+  if (is.list(result_value) && !inherits(result_value, c("ellmer::ContentImageInline", "data.frame"))) {
+    structured <- result_value
+  } else if (is.data.frame(result_value)) {
+    structured <- lapply(as.list(result_value), unname)
+  }
+
+  response <- list(
+    content = list(
+      list(
+        type = "text",
+        text = format_result(result)
+      )
+    ),
+    isError = is_error
   )
+
+  if (!is.null(structured)) {
+    response$structuredContent <- structured
+  }
+
+  jsonrpc_response(data$id, response)
 }
 
 schedule_handle_message_from_server <- function() {

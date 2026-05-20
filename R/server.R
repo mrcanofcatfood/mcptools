@@ -496,6 +496,28 @@ tool_as_json <- function(tool) {
     inputSchema = inputSchema
   )
 
+  # Include title if set (MCP spec 2025-06-18)
+  # ellmer doesn't have a title field on ToolDef yet,
+  # but we check for it via the S7 object system.
+  title_val <- NULL
+  tryCatch({
+    title_val <- tool@title
+  }, error = function(e) NULL)
+  if (!is.null(title_val) && nzchar(title_val)) {
+    result$title <- title_val
+  }
+
+  # Include outputSchema if set (MCP spec 2025-06-18)
+  # ellmer doesn't have an outputSchema field on ToolDef yet,
+  # but we check for it via the S7 object system.
+  output_schema <- NULL
+  tryCatch({
+    output_schema <- tool@outputSchema
+  }, error = function(e) NULL)
+  if (!is.null(output_schema) && length(output_schema) > 0) {
+    result$outputSchema <- output_schema
+  }
+
   # Include annotations if declared via ellmer::tool_annotations()
   if (length(tool@annotations) > 0) {
     result$annotations <- tool@annotations
