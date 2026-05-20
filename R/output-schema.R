@@ -48,16 +48,16 @@ set_tool_output_schema <- function(tool, schema) {
     cli::cli_abort("{.arg schema} must be a named list (JSON Schema object).")
   }
 
-  # Use S7's prop<- if available (future-proof), otherwise set attribute.
-  # The tryCatch in tool_as_json() will find it either way.
+  # Try setting the S7 property first (works when ellmer adds outputSchema to ToolDef)
+  # Fall back to attribute (works with current ellmer)
   tryCatch(
     {
-      # If ellmer adds the property, this works directly
       tool@outputSchema <- schema
+      # Clear any stale attribute to avoid divergence
+      attr(tool, "outputSchema") <- NULL
     },
     error = function(e) {
-      # ToolDef doesn't have the property yet — store as attribute
-      attr(tool, "outputSchema") <- schema
+      attr(tool, "outputSchema") <<- schema
     }
   )
 

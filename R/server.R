@@ -86,6 +86,13 @@
 #'   tools (`list_r_sessions`, `select_r_session`) that work with
 #'   `mcp_session()`. Defaults to `TRUE`. Note that the tools to interface with
 #'   sessions are still first routed through the `mcp_server()`.
+#' @param server_name Optional display name for the server in MCP client UIs.
+#'   Defaults to `"R mcptools server"`.
+#' @param server_version Optional version string reported to MCP clients.
+#'   Defaults to `"0.0.1"`.
+#' @param instructions Optional server instructions sent to the LLM during
+#'   initialisation (protocol version >= 2025-03-26). Defaults to a generic
+#'   description of the R session.
 #'
 #' @returns
 #' `mcp_server()` and `mcp_session()` are both called primarily for their
@@ -141,13 +148,19 @@ mcp_server <- function(
   type = c("stdio", "http"),
   host = "127.0.0.1",
   port = as.integer(Sys.getenv("MCPTOOLS_PORT", "8080")),
-  session_tools = TRUE
+  session_tools = TRUE,
+  server_name = NULL,
+  server_version = NULL,
+  instructions = NULL
 ) {
   check_not_interactive()
   type <- rlang::arg_match(type)
 
   nanonext::reap(the$session_socket) # in case session was started in .Rprofile
   the$sessions_enabled <- isTRUE(session_tools)
+  the$server_name <- server_name
+  the$server_version <- server_version
+  the$instructions <- instructions
   set_server_tools(tools, session_tools = the$sessions_enabled)
 
   switch(
@@ -463,14 +476,15 @@ capabilities <- function(protocol_version = latest_protocol_version) {
       )
     ),
     serverInfo = list(
-      name = "R mcptools server",
-      version = "0.0.1"
+      name = the$server_name %||% "R mcptools server",
+      version = the$server_version %||% "0.0.1"
     )
   )
 
   # `instructions` was introduced in protocol version 2025-03-26
+  custom_instructions <- the$instructions
   if (protocol_version_gte(protocol_version, "2025-03-26")) {
-    res$instructions <- "This provides information about a running R session."
+    res$instructions <- custom_instructions %||% "This provides information about a running R session."
   }
 
   res
@@ -496,31 +510,32 @@ tool_as_json <- function(tool) {
     inputSchema = inputSchema
   )
 
-  # Include title if set (MCP spec 2025-06-18)
-  # ellmer stores title in annotations$title via tool_annotations(title = ...).
-  # Future ellmer versions may add a dedicated ToolDef title property.
-  # Check both: dedicated property first, then annotations fallback.
+  # Include annotations first so title dedup can inspect them.
+  # ellmer::tool_annotations(title = ...) stores title inside annotations;
+  # we promote it to a top-level field per MCP spec 2025-06-18.
+  annotations <- if (length(tool@annotations) > 0) tool@annotations else NULL
+
+  # Include title (MCP spec 2025-06-18)
+  # Check ToolDef property first (future ellmer), then annotations$title.
   title_val <- NULL
   tryCatch({
     title_val <- tool@title
   }, error = function(e) NULL)
-  if ((is.null(title_val) || !nzchar(title_val)) && length(tool@annotations) > 0) {
-    title_val <- tool@annotations$title
+  if ((is.null(title_val) || !nzchar(title_val)) && !is.null(annotations)) {
+    title_val <- annotations$title
   }
   if (!is.null(title_val) && nzchar(title_val)) {
     result$title <- title_val
-    # Remove title from annotations to avoid duplication
-    if (!is.null(result$annotations) && !is.null(result$annotations$title)) {
-      result$annotations$title <- NULL
-      if (length(result$annotations) == 0) result$annotations <- NULL
+    # Strip title from annotations to avoid duplication in the response
+    if (!is.null(annotations$title)) {
+      annotations$title <- NULL
+      if (length(annotations) == 0) annotations <- NULL
     }
   }
 
-  # Include outputSchema if set (MCP spec 2025-06-18)
-  # Supports two paths:
-  #   1. Future ellmer: ToolDef gains an outputSchema property
-  #   2. Current ellmer: users set it via set_tool_output_schema() helper
-  #      which stores it as an attribute
+  # Include outputSchema (MCP spec 2025-06-18)
+  # Two paths: future ellmer ToolDef property, or attribute set by
+  # set_tool_output_schema() helper.
   output_schema <- NULL
   tryCatch({
     output_schema <- tool@outputSchema
@@ -531,9 +546,9 @@ tool_as_json <- function(tool) {
     result$outputSchema <- output_schema
   }
 
-  # Include annotations if declared via ellmer::tool_annotations()
-  if (length(tool@annotations) > 0) {
-    result$annotations <- tool@annotations
+  # Attach remaining annotations (title already promoted above)
+  if (!is.null(annotations)) {
+    result$annotations <- annotations
   }
 
   result

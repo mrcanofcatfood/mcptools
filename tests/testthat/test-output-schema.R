@@ -178,3 +178,47 @@ test_that("as_tool_call_result omits structuredContent for string results", {
   expect_false("structuredContent" %in% names(output$result))
   expect_equal(output$result$content[[1]]$text, "plain text result")
 })
+
+# ── capabilities with custom server info ────────────────────────
+
+test_that("capabilities uses custom server_name and server_version", {
+  the$server_name <- "sdm-mcp"
+  the$server_version <- "1.0.0"
+  on.exit({
+    the$server_name <- NULL
+    the$server_version <- NULL
+  }, add = TRUE)
+
+  caps <- capabilities("2025-03-26")
+
+  expect_equal(caps$serverInfo$name, "sdm-mcp")
+  expect_equal(caps$serverInfo$version, "1.0.0")
+})
+
+test_that("capabilities falls back to defaults when no custom info", {
+  the$server_name <- NULL
+  the$server_version <- NULL
+
+  caps <- capabilities("2025-03-26")
+
+  expect_equal(caps$serverInfo$name, "R mcptools server")
+  expect_equal(caps$serverInfo$version, "0.0.1")
+})
+
+test_that("capabilities uses custom instructions", {
+  the$instructions <- "SDM tools for species distribution modelling."
+  on.exit(the$instructions <- NULL, add = TRUE)
+
+  caps <- capabilities("2025-03-26")
+
+  expect_equal(caps$instructions, "SDM tools for species distribution modelling.")
+})
+
+test_that("capabilities omits instructions for old protocol versions", {
+  the$instructions <- "Should not appear."
+  on.exit(the$instructions <- NULL, add = TRUE)
+
+  caps <- capabilities("2024-11-05")
+
+  expect_null(caps$instructions)
+})
